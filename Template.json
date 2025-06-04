@@ -1,0 +1,14 @@
+{
+    "Server": {
+    },
+    "Cluster": {
+	},
+    "Databases": [{
+    }],
+    "Listeners": [{
+    }],
+    "OEM AGENT": { 
+    },
+    "Patches": [
+    ]
+}

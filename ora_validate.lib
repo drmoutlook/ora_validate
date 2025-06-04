@@ -1,0 +1,551 @@
+# Read environment variables from ora_validate.conf file and execute in current shell
+source $(pwd)/ora_validate.conf
+
+# Function to display log messages.
+fn_logMe(){
+    local v_msg="$1"
+    local v_msg_lvl="$2"
+    if [ "$v_msg_lvl" == "DEBUG" ]; then
+        [ $DEBUG -eq 1 ] && echo "$(date +%Y%m%d"_"%H":"%M":"%S), ${v_msg_lvl}, ${v_msg}" | tee -a ${LOG_FILE}
+    elif [ "$v_msg_lvl" == "ERR" ]; then
+        echo -e "\e[1m\e[31;49m$(date +%Y%m%d"_"%H":"%M":"%S), ${v_msg_lvl}, ${v_msg}\e[0m"  | tee -a ${LOG_FILE}
+    else
+        [ ${LOG} -eq 1 ] && echo "$(date +%Y%m%d"_"%H":"%M":"%S), ${v_msg_lvl}, ${v_msg}" | tee -a ${LOG_FILE}
+    fi
+}
+
+# Function to display usage.
+fn_usage(){
+    echo "Syntax: $0 [-d|-h]
+options:
+    -d Enable debug mode
+    -h help"
+    exit 0
+}
+
+# Function to display well formatted output.
+fn_display_info(){
+    v_msg="${1}"
+    local v_padding="                                                                                                                         "
+    printf "# %s%s#\n" "${v_msg}" "${v_padding:${#v_msg}}"
+}
+
+# Function to copy the json template. The blank json template file is copied and JSON data will be added later
+fn_copy_template(){
+    if [ ! -e "${v_json_file}" ]; then
+        # Copy the template file
+        cp "${v_template_json}" "${v_json_file}"
+        local v_ret_val=$?
+        
+        # Failed to copy template file.
+        [ "${v_ret_val}" != "0" ] && fn_logMe "fn_copy_template, Copying Template.json to ${v_json_file} failed" "ERR"
+
+        # move previous compare conf file
+        mv ${v_compare_conf} ${v_compare_conf}.bck   
+    fi   
+}
+
+# Read data from the JSON file to compare.
+fn_gen_json_data(){
+    local v_cmd_type="$1"           # SQL or LINUX_CMD
+    local v_cmd="$2"                # Command
+    local v_json_depth="$3"         # Depth of the json
+    local v_db_name="$4"            # DB name if the command type is SQL
+
+    fn_logMe "fn_gen_json_data, v_cmd_type  has value  ${v_cmd_type}"  "DEBUG"
+    fn_logMe "fn_gen_json_data, v_cmd  has value  ${v_cmd}"  "DEBUG"
+    fn_logMe "fn_gen_json_data, v_json_depth  has value ${v_json_depth} "  "DEBUG"
+    fn_logMe "fn_gen_json_data, v_db_name  has value  ${v_db_name}"  "DEBUG"
+
+    if [ "${v_cmd_type}" == "LINUX_CMD" ]; then
+        a_json_data=$(${v_cmd})
+        if [ "${v_db_name}" == "Object" ]; then
+            a_json_data=$(echo "{$a_json_data}")
+        elif [ "${v_db_name}" == "ObjectArr" ]; then  
+            a_json_data=$(echo "[$a_json_data]")
+        fi
+    elif [ "${v_cmd_type}" == "SQL" ]; then
+        fn_logMe "fn_gen_json_data, The DBname passed is ${v_db_name}" "DEBUG"
+        a_json_data=$(fn_exec_sql "${v_db_name}" "${v_cmd}")
+        
+        # Removed comma at the end of the json data.
+        a_json_data=$(echo "$a_json_data" | sed 's/,$//g') 
+    fi
+    fn_logMe "fn_gen_json_data, a_json_data  has value  ${a_json_data}"  "DEBUG"
+    v_json_object_return="${a_json_data}"
+
+    # Adding JSON output to the json file
+    cat "${v_json_file}" | ${JQ} "${v_json_depth} +=$v_json_object_return"  > "${v_tmp_json_file}"
+    mv "${v_tmp_json_file}" "${v_json_file}"
+}  
+
+# Generate hostname and add to the json file
+fn_gen_hostname(){
+    local v_cmd="echo \"Hostname\": \"$(hostname -f)\","
+    local v_json_depth=".\"Server\""
+    echo "${v_json_depth}.\"Hostname\"" >> ${v_compare_conf}
+    fn_gen_json_data "LINUX_CMD" "${v_cmd}" "${v_json_depth}" "Object" 
+}
+
+# Fetch kernel release and add to the json file
+fn_gen_kernel_release(){   
+    local v_cmd="echo \"Kernel\": \"$(uname -r)\","
+    local v_json_depth=".\"Server\""
+    echo "${v_json_depth}.\"Kernel\"" >> ${v_compare_conf}
+    fn_gen_json_data "LINUX_CMD" "${v_cmd}" "${v_json_depth}" "Object"
+}
+
+# Generate Date and Uptime and add to the json file
+fn_gen_date_uptime(){   
+    local v_cmd="sh ${CMD_DIR}/ora_validate_uptime.sh"
+    local v_json_depth=".\"Server\""
+    fn_gen_json_data "LINUX_CMD" "${v_cmd}" "${v_json_depth}" "Object"
+}
+
+# Generate the memory info and add json object to the json file
+fn_gen_memory(){
+    # Adding Date and Uptime to the json file
+    local v_cmd="sh ${CMD_DIR}/ora_validate_memory.sh"
+    local v_json_depth=".\"Server\""
+    fn_gen_json_data "LINUX_CMD" "${v_cmd}" "${v_json_depth}" "Object"
+}
+
+# Generate the CPU info and add json object to the json file
+fn_gen_CPU(){
+    # Adding Date and Uptime to the json file
+    local v_cmd="sh ${CMD_DIR}/ora_validate_CPU.sh"
+    local v_json_depth=".\"Server\""
+    fn_gen_json_data "LINUX_CMD" "${v_cmd}" "${v_json_depth}" "Object"
+}
+
+# Generate the disks info and add json object to the json file
+fn_gen_disks(){
+    # Adding Date and Uptime to the json file
+    local v_cmd="sh ${CMD_DIR}/ora_validate_disks.sh"
+    local v_json_depth=".\"Server\""
+    fn_gen_json_data "LINUX_CMD" "${v_cmd}" "${v_json_depth}" "Object"
+}
+
+# Generate the network info and add json object to the json file
+fn_gen_networks(){
+    local v_cmd="sh ${CMD_DIR}/ora_validate_network.sh"
+    local v_json_depth=".\"Server\""
+    fn_gen_json_data "LINUX_CMD" "${v_cmd}" "${v_json_depth}" "Object"
+}
+
+# Function to execute sql command and return json output.
+fn_exec_sql(){
+    local v_db_name="$1"
+    local v_sql_cmd="$2"
+
+    # By default the sql is executed as user sys
+    # Otherwise hardcoaded username/password should be provided.
+    local v_exec_user="$3"
+    local v_sql_output=""
+    [ "${v_exec_user}" == "" ] && v_exec_user="/ as sysdba"
+    export ORAENV_ASK=NO
+    export ORACLE_SID="${v_db_name}"
+    . oraenv > /dev/null
+    export ORAENV_ASK=NO
+
+    # Executing the SQL command
+    ${ORACLE_HOME}/bin/sqlplus -s "${v_exec_user}" << EOF
+    set heading off feedback off pagesize 0 lines 400;
+    ${v_sql_cmd};
+    exit;
+EOF
+}
+
+fn_backup_spfile_controlfile(){
+    local v_db_name="$1"
+    local v_date_time=$(date +%Y%m%d_%H%M)
+    declare -a a_sql=( "create pfile='$BACKUP_DIR/${v_db_name}_pfile_from_mem_${v_date_time}.ora' from memory" 
+"create pfile='$BACKUP_DIR/${v_db_name}_pfile_from_spfile_${v_date_time}.ora' from spfile" 
+"ALTER DATABASE BACKUP CONTROLFILE TO TRACE AS '$BACKUP_DIR/${v_db_name}_controlfile_${v_date_time}.ora'"
+)
+    for v_sql in "${a_sql[@]}"
+    do
+        fn_logMe "fn_backup_spfile_controlfile, SQL ${v_sql}" "DEBUG"
+        fn_exec_sql "${v_db_name}" "${v_sql}"
+    done
+}
+
+
+# Generate details of the databases
+fn_gen_database(){
+    arr_db_names=( $(ps -ef | grep pmon | egrep -wv 'grep|MGMTDB|+APX' | awk -F "_" '{print $NF}'| sort) )
+    
+    local v_idx=0
+    for v_db_name in "${arr_db_names[@]}"
+    do
+        # Fetching and appending database details.
+        local v_json_depth=".Databases[$v_idx]"
+        v_json_object_return="\"${v_db_name}\":{}"
+    
+        fn_set_oraenv "${v_db_name}"
+
+        # Adding database name object to the output json
+        cat "${v_json_file}" | ${JQ} "${v_json_depth} +={${v_json_object_return}}"  > "${v_tmp_json_file}"
+        mv "${v_tmp_json_file}" "${v_json_file}"
+
+        if [ "${v_db_name:0:4}" == "+ASM" ]; then
+            a_cmd[0]="select json_object('DB Name' value i.INSTANCE_NAME,'Version' value i.version,'Startup Time' value to_char(i.startup_time,'YYYY-MM-DD HH24:MI:SS')) from v\$instance i"
+            a_cmd[1]="select '{\"DB Name\":\"' || i.INSTANCE_NAME || '\",\"Version\":\"' || i.version || '\",\"Startup Time\":\"' || to_char(i.startup_time,'YYYY-MM-DD HH24:MI:SS') || '\"}' from v\$instance i"
+            # Adding objects to compare later.
+            echo ".\"Databases\"[$v_idx].\"${v_db_name}\".\"DB Name\"" >>  "ora_validate_compare_objects.conf"
+            echo ".\"Databases\"[$v_idx].\"${v_db_name}\".\"Version\"" >>  "ora_validate_compare_objects.conf"
+            fn_gen_json_data "SQL" "${a_cmd[$v_db_version]}" ".Databases[$v_idx].\"${v_db_name}\"" "${v_db_name}"
+
+            # Adding cluster resource information details.
+            crsctl stat res | grep -v ^$ | awk -F "=" '{ if ($1 != "STATE") { printf "\""$1"\":\""$2"\","} else { printf "\""$1"\":\""$2"\"},"} }' | sed 's/\ \ */\ /g' | sed -e 's/\"NAME/{\"Name/g' -e 's/TYPE/Type/g' -e 's/TARGET/Target/g' |sed 's/^/Resources: [/g'  | sed 's/,$/]/g' > /tmp/cluster_res.tmp
+            v_json_depth=".Cluster"
+            echo "${v_json_depth}.\"Resources\"[]" >> ${v_compare_conf}
+            fn_gen_json_data "LINUX_CMD" "cat /tmp/cluster_res.tmp" "${v_json_depth}" "Object" 
+
+
+            # Fetching diskgroup info
+            #select GROUP_NUMBER,NAME,SECTOR_SIZE,LOGICAL_SECTOR_SIZE,BLOCK_SIZE,ALLOCATION_UNIT_SIZE,STATE,TYPE,TOTAL_MB,COMPATIBILITY,DATABASE_COMPATIBILITY from v$asm_diskgroup order by 1;
+            a_cmd[0]="select json_object('GROUP_NUMBER' value GROUP_NUMBER,'DG_NAME' value NAME, 'SECTOR_SIZE' value SECTOR_SIZE,'LOGICAL_SECTOR_SIZE' value LOGICAL_SECTOR_SIZE,  
+            'BLOCK_SIZE' value BLOCK_SIZE,'AU_SIZE' value ALLOCATION_UNIT_SIZE, 'STATE' value STATE, 'TYPE' value TYPE, 'TOTAL_MB' value TOTAL_MB,
+            'COMPATIBILITY' value COMPATIBILITY, 'DB_COMPATIBILITY' value DATABASE_COMPATIBILITY) || ',' from v\$asm_diskgroup order by 1"
+            a_cmd[1]="select '{\"GROUP_NUMBER\":\"' || GROUP_NUMBER || '\",\"DG_NAME\":\"' || NAME || '\",\"SECTOR_SIZE\":\"' || SECTOR_SIZE ||  
+            '\",\"BLOCK_SIZE\":\"' || BLOCK_SIZE || '\",\"AU_SIZE\":\"' || ALLOCATION_UNIT_SIZE || '\",\"STATE\":\"' || STATE|| '\",\"TYPE\":\"' || TYPE|| '\",\"TOTAL_MB\":\"' || TOTAL_MB ||
+            '\",\"COMPATIBILITY\":\"' || COMPATIBILITY || '\",\"DB_COMPATIBILITY\":\"' || DATABASE_COMPATIBILITY || '\"},' from v\$asm_diskgroup order by 1"
+            v_return_sql=$(fn_exec_sql "${v_db_name}" "${a_cmd[$v_db_version]}")
+            v_return_sql=$(echo ${v_return_sql} | sed 's/,$//g')
+            v_json_depth=".\"Databases\"[$v_idx].\"${v_db_name}\""
+            v_json_object_return="DISK_GROUPS:[${v_return_sql}],"
+            echo ".\"Databases\"[$v_idx].\"${v_db_name}\".\"DISK_GROUPS\"[]" >>  "ora_validate_compare_objects.conf"
+            fn_modify_jsonfile "${v_json_depth}" "${v_json_object_return}"
+
+            # Fetching disk info
+            #select GROUP_NUMBER,g.name,DISK_NUMBER,MOUNT_STATUS,HEADER_STATUS,g.STATE,OS_MB,g.TOTAL_MB,d.Name,path,Label from v$asm_disk d join v$asm_diskgroup g using(group_number) order by g.name;
+            a_cmd[0]="select json_object('GROUP_NUMBER' value GROUP_NUMBER,'DG_NAME' value g.name, 'DISK_NUMBER' value DISK_NUMBER, 'MOUNT_STATUS' value MOUNT_STATUS, 'HEADER_STATUS' value HEADER_STATUS,
+            'DG_STATE' value g.STATE,'OS_MB' value  OS_MB, 'GROUP_TOTAL_MB' value g.TOTAL_MB, 'DISK_NAME' value d.Name,'DISK_PATH' value path, 'LABEL' value Label) || ',' from v\$asm_disk d 
+            join v\$asm_diskgroup g using(group_number) order by g.name"
+            a_cmd[1]="select '{\"GROUP_NUMBER\":\"' || GROUP_NUMBER || '\",\"DG_NAME\":\"' || g.name || '\",\"DISK_NUMBER\":\"' || DISK_NUMBER || '\",\"MOUNT_STATUS\":\"' || MOUNT_STATUS|| '\",\"HEADER_STATUS\":\"' || HEADER_STATUS ||
+            '\",\"DG_STATE\":\"' || g.STATE || '\",\"OS_MB\":\"' || OS_MB || '\",\"GROUP_TOTAL_MB\":\"' || g.TOTAL_MB || '\",\"DISK_NAME\":\"' || d.Name || '\",\"DISK_PATH\":\"' || path|| '\",\"LABEL\":\"' || Label || '\"},' from v\$asm_disk d 
+            join v\$asm_diskgroup g using(group_number) order by g.name"
+            v_return_sql=$(fn_exec_sql "${v_db_name}" "${a_cmd[$v_db_version]}")
+            v_return_sql=$(echo ${v_return_sql} | sed 's/,$//g')
+            v_json_depth=".\"Databases\"[$v_idx].\"${v_db_name}\""
+            v_json_object_return="DISKS:[${v_return_sql}],"
+            echo ".\"Databases\"[$v_idx].\"${v_db_name}\".\"DISKS\"[]" >>  "ora_validate_compare_objects.conf"
+            fn_modify_jsonfile "${v_json_depth}" "${v_json_object_return}"
+
+        else
+            # Backup spfile and the controlfiles
+            fn_backup_spfile_controlfile "${v_db_name}"
+            a_cmd[0]="select json_object('DB Name' value d.name ,'Version' value i.version,'Startup Time' value to_char(i.startup_time,'YYYY-MM-DD HH24:MI:SS') ,'DB Role' value d.database_role ,'Open Mode' value d.open_mode, 'Log Mode' value d.log_mode) from v\$database d, v\$instance i"
+            a_cmd[1]="select '{\"DB Name\":\"' || d.name || '\",\"Version\":\"' || i.version || '\",\"Startup Time\":\"' || to_char(i.startup_time,'YYYY-MM-DD HH24:MI:SS') || '\",\"DB Role\":\"' || d.database_role || '\",\"Open Mode\":\"' || d.open_mode|| '\",\"Log Mode\":\"' || d.log_mode || '\"}' from v\$database d, v\$instance i"
+
+            # Adding objects to compare later.
+            echo ".\"Databases\"[$v_idx].\"${v_db_name}\".\"DB Name\"" >>  "ora_validate_compare_objects.conf"
+            echo ".\"Databases\"[$v_idx].\"${v_db_name}\".\"Version\"" >>  "ora_validate_compare_objects.conf"
+            echo ".\"Databases\"[$v_idx].\"${v_db_name}\".\"DB Role\"" >>  "ora_validate_compare_objects.conf"
+            echo ".\"Databases\"[$v_idx].\"${v_db_name}\".\"Open Mode\"" >>  "ora_validate_compare_objects.conf"
+            echo ".\"Databases\"[$v_idx].\"${v_db_name}\".\"Log Mode\"" >>  "ora_validate_compare_objects.conf"
+            fn_gen_json_data "SQL" "${a_cmd[$v_db_version]}" ".Databases[$v_idx].${v_db_name}" "${v_db_name}"
+
+
+            # Fetching and adding invalid objects array
+            a_cmd[0]="select json_object('Owner' value owner,'Object Name' value object_name, 'Object Type' value object_type) || ',' from dba_objects where status !='VALID' group by owner,object_name,object_type"
+            a_cmd[1]="select '{\"Owner\":\"' || owner|| '\",\"Object Name\":\"' || object_name|| '\",\"Object Type\":\"' || object_type || '\"},' from dba_objects where status !='VALID' group by owner,object_name,object_type"
+
+            v_return_sql=$(fn_exec_sql "${v_db_name}" "${a_cmd[$v_db_version]}")
+            v_return_sql=$(echo ${v_return_sql} | sed 's/,$//g')
+            v_json_depth=".\"Databases\"[$v_idx].\"${v_db_name}\""
+            v_json_object_return="Invalid_Objects:[${v_return_sql}],"
+            echo ".\"Databases\"[$v_idx].\"${v_db_name}\".\"Invalid_Objects\"[]" >>  "ora_validate_compare_objects.conf"
+            fn_modify_jsonfile "${v_json_depth}" "${v_json_object_return}"
+
+            # Fetching and adding datafiles array
+            a_cmd[0]="select json_object('Name' value name,'Status' value status,'Mode' value enabled) || ',' from v\$datafile order by name"
+            a_cmd[1]="select '{\"Name\":\"' || name|| '\",\"Status\":\"' || status|| '\",\"Mode\":\"' || enabled || '\"},' from v\$datafile order by name"
+            v_return_sql=$(fn_exec_sql "${v_db_name}" "${a_cmd[$v_db_version]}")
+            v_return_sql=$(echo ${v_return_sql} | sed 's/,$//g')
+            v_json_object_return="\"Data Files\":[$v_return_sql]"
+            echo ".\"Databases\"[$v_idx].\"${v_db_name}\".\"Data Files\"[]" >>  "ora_validate_compare_objects.conf"
+            fn_modify_jsonfile "${v_json_depth}" "${v_json_object_return}"
+
+            # Fetching and adding tempfile array
+            a_cmd[0]="select json_object('Name' value name,'Status' value status,'Mode' value enabled) || ',' from v\$tempfile order by name"
+            a_cmd[1]="select '{\"Name\":\"' || name|| '\",\"Status\":\"' || status|| '\",\"Mode\":\"' || enabled || '\"},' from v\$tempfile order by name"
+            v_return_sql=$(fn_exec_sql "${v_db_name}" "${a_cmd[$v_db_version]}")
+            v_return_sql=$(echo ${v_return_sql} | sed 's/,$//g')
+            v_json_object_return="\"Temp Files\":[${v_return_sql}]"
+            echo ".\"Databases\"[$v_idx].\"${v_db_name}\".\"Temp Files\"[]" >>  "ora_validate_compare_objects.conf"
+            fn_modify_jsonfile "${v_json_depth}" "${v_json_object_return}"
+    
+            # Fetching and adding Components array
+            a_cmd[0]="SELECT json_object('COMP ID' value comp_id,'Component Name' value comp_name,'Version' value version,'Status' value status) || ',' FROM dba_registry order by comp_id"
+            a_cmd[1]="SELECT '{\"COMP ID\":\"' || comp_id || '\",\"Component Name\":\"' || comp_name || '\",\"Version\":\"' || version|| '\",\"Status\":\"' || status || '\"},' FROM dba_registry order by comp_id"
+            v_return_sql=$(fn_exec_sql "${v_db_name}" "${a_cmd[$v_db_version]}")
+            v_return_sql=$(echo ${v_return_sql} | sed 's/,$//g')
+            v_json_object_return="\"Components\":[${v_return_sql}]"
+            echo ".\"Databases\"[$v_idx].\"${v_db_name}\".\"Components\"[]" >>  "ora_validate_compare_objects.conf"
+            fn_modify_jsonfile "${v_json_depth}" "${v_json_object_return}"
+        fi
+
+        # Fetching and adding parameter array
+        a_cmd[0]="select json_object('Name' value name,'Value' value value) || ',' from v\$parameter order by name"
+        a_cmd[1]="select '{\"Name\":\"' || name|| '\",\"Value\":\"' || value || '\"},' from v\$parameter order by name"
+        v_return_sql=$(fn_exec_sql "${v_db_name}" "${a_cmd[$v_db_version]}")
+        v_return_sql=$(echo ${v_return_sql} | sed 's/,$//g')
+        v_json_object_return="\"Parameters\":[${v_return_sql}]"
+        echo ".\"Databases\"[$v_idx].\"${v_db_name}\".\"Parameters\"[]" >>  "ora_validate_compare_objects.conf"
+        fn_modify_jsonfile "${v_json_depth}" "${v_json_object_return}"
+
+
+        # Fetching and adding Diag info array
+        a_cmd[0]="select json_object('Diag Name' value name,'Value' value value) || ',' from v\$diag_info where name != 'Default Trace File' order by name"        
+        a_cmd[1]="select '{\"Diag Name\":\"' || name|| '\",\"Value\":\"' || value || '\"},' from v\$diag_info where name != 'Default Trace File' order by name"
+        v_return_sql=$(fn_exec_sql "${v_db_name}" "${a_cmd[$v_db_version]}")
+        v_return_sql=$(echo ${v_return_sql} | sed 's/,$//g')
+        v_json_object_return="\"Diag Info\":[${v_return_sql}]"
+        echo ".\"Databases\"[$v_idx].\"${v_db_name}\".\"Diag Info\"[]" >>  "ora_validate_compare_objects.conf"
+        fn_modify_jsonfile "${v_json_depth}" "${v_json_object_return}"
+        let v_idx=v_idx+1
+    done
+}
+
+# Function to add details to the JSON file
+fn_modify_jsonfile(){
+    local v_json_depth="$1"
+    local v_json_object_return="$2"
+    cat "${v_json_file}" | ${JQ} "${v_json_depth} += {${v_json_object_return}}"  > "${v_tmp_json_file}"
+    mv "${v_tmp_json_file}" "${v_json_file}"
+}
+
+fn_set_oraenv(){
+    v_inst="$1"
+    export ORAENV_ASK=NO
+    export ORACLE_SID="${v_inst}"
+    . oraenv > /dev/null
+    export ORAENV_ASK=YES
+}
+
+# Generate the listener configuration
+fn_gen_listener(){
+    local v_idx=0
+    #. oraenv <<< $(ps -ef | grep pmon | grep -v grep | awk -F "_" '{print $NF}'| head -n1) > /dev/null
+    local v_oraenv=$(ps -ef | grep pmon | grep +ASM | grep -v grep | awk -F "_" '{print $NF}'| head -n1)
+    [ "$v_oraenv" == "" ] && v_oraenv=$(ps -ef | grep pmon | grep -v grep | awk -F "_" '{print $NF}'| head -n1)
+    fn_set_oraenv "$v_oraenv"
+    for listener in $(ps -ef | grep tnslsnr | grep -v grep | awk '{print $9}' | egrep -v "LISTENER_SCAN(1|2|3)|ASMNET(1|2|3)LSNR_ASM|MGMTLSNR|ASM_LISTENER"|sort)
+    # Hardcoaded to simulate multiple listeners
+    #for listener in  "LISTENER_19C" "LISTENER_19C" "LISTENER_19C" 
+    do  
+        v_json_depth=".\"Listeners\"[$v_idx]"
+        #v_json_object_return="\"${listener}\":[{$(lsnrctl service ${listener} | grep -wi Service | awk '{print "#"$1"#:"$2","}' | sed s/#/\"/g | sed "s/,,//g")}]"
+        #cat Template.json | ./jq-linux-x86_64 '."Listeners"[0] += {"LISTENER_19C":[{"Service":"fwamtcp.corp.medtronic.com","Instance":"fwamtcp"},{"Service":"q.corp.medtronic.com","Instance":"q"}]}'
+        #local v_services=$(lsnrctl service ${listener} | egrep -w 'Service|Instance' | awk '{printf "#"$1"#:"$2","}' | sed s/#/\"/g | sed "s/,,/},/g" | sed "s/\"Service/{\"Service/g" | sed "s/},$/}/g")
+        # Hardcoaded to simulate multiple services
+        #local v_services=$(cat listener_demo.txt | egrep -w 'Service|Instance' | awk '{printf "#"$1"#:"$2","}' | sed s/#/\"/g | sed "s/,,/},/g" | sed "s/\"Service/{\"Service/g" | sed "s/},$/}/g")
+        local v_tmp_lsnrctl_svc="listener_services.tmp"
+        local v_out_lsnrctl_svc="listener_services.out"
+        local v_tmp_lsnrctl_svc1="listener_services1.tmp"
+        rm -f "${v_out_lsnrctl_svc}"
+        rm -f "${v_tmp_lsnrctl_svc}"
+        rm -f "${v_tmp_lsnrctl_svc1}"
+        
+        # looping throught the multiple Instances in the services and naming them as Instance1, Instance2
+        #cat listener_demo.txt | egrep -w 'Service|Instance' | awk '{print "#"$1"#:"$2","}' | sed 's/#/\"/g' | sed 's/,,//g' > "${v_tmp_lsnrctl_svc1}"
+        lsnrctl service ${listener} | egrep -w 'Service|Instance' | awk '{print "\""$1"\":"$2","}' | sed 's/,,//g' > "${v_tmp_lsnrctl_svc1}"
+
+        cat "${v_tmp_lsnrctl_svc1}" | while read line
+        do
+                v_first_word=$(echo $line | awk -F ":" '{print $1}')
+                if [ "$v_first_word" == "\"Service\"" ]; then
+                        echo "==Seperator==" >> "${v_tmp_lsnrctl_svc}"
+                fi
+                echo ${line} >> "${v_tmp_lsnrctl_svc}"
+        done 
+        
+        # Remove line number 1 and add Handler at the end.
+        sed -i '1d' "${v_tmp_lsnrctl_svc}"
+        echo "==Seperator==" >> "${v_tmp_lsnrctl_svc}"
+    
+        #echo "\"Services\":[" > "${v_out_lsnrctl_svc}"
+        cat "${v_tmp_lsnrctl_svc}" | while read line
+        do
+            v_key=$(echo $line | awk -F ":" '{print $1}')
+            v_value=$(echo $line | awk -F ":" '{print $2}')
+            fn_logMe "fn_gen_listener, Key $v_key, Value $v_value" "DEBUG"
+            if [ "$v_key" == "\"Service\"" ]; then
+                v_inst_cnt=1
+                echo -en "{${v_key}:${v_value}" >> "${v_out_lsnrctl_svc}"
+            elif [ "$v_key" == "\"Instance\"" ]; then
+                v_inst_name=$(echo $line | awk -F ":" '{print $2}')
+                [ $v_inst_cnt -gt 1 ] && echo -ne "," >> "${v_out_lsnrctl_svc}"
+                echo -en "\"Instance${v_inst_cnt}\":${v_inst_name}" >> "${v_out_lsnrctl_svc}"
+                let v_inst_cnt=v_inst_cnt+1
+            elif [ "$v_key" == "==Seperator==" ]; then
+                echo -ne "}," >> "${v_out_lsnrctl_svc}"
+            fi
+        done
+   
+        # Listing all the networks
+        v_networks=$(lsnrctl status "${listener}" | grep DESCRIPTION | grep PORT | grep HOST | sed 's/(DESCRIPTION=(ADDRESS=(//g' | sed 's/)(/=/g' | sed 's/)*//g' |sed 's/^\ *//g' | awk -F "=" '{printf "{\""$1"\":\""$2"\",\""$3"\":\""$4"\",\""$5"\":\""$6"\"},"}'| sed 's/,$//g')
+        fn_logMe "List of network $v_networks" "DEBUG"
+        echo ".\"Listeners\"[$v_idx].\"${listener}\".\"Network\"[]" >> "ora_validate_compare_objects.conf"
+
+        # Listing all the services. 
+        v_services=$(cat ${v_out_lsnrctl_svc}|sed 's/,$//g')
+        fn_logMe "List of services $v_services" "DEBUG"
+        echo ".\"Listeners\"[$v_idx].\"${listener}\".\"Services\"[]" >>  "ora_validate_compare_objects.conf"
+        
+        # Combined network and the services and modify json.
+        v_json_object_return="\"${listener}\":{\"Network\":[${v_networks}],\"Services\":[${v_services}]}"
+        fn_logMe "Object Returned $v_json_object_return" "DEBUG"
+        fn_modify_jsonfile "${v_json_depth}" "${v_json_object_return}"
+        let v_idx=v_idx+1
+    done
+    rm -f "${v_tmp_lsnrctl_svc}"
+    rm -f "${v_tmp_lsnrctl_svc1}"
+    rm -f "${v_out_lsnrctl_svc}"
+}
+
+
+# Generating oem agent details
+fn_gen_oem_agent(){
+    local v_cmd="sh ${CMD_DIR}/ora_validate_oem_agent.sh"
+    local v_json_depth=".\"OEM AGENT\""
+    fn_gen_json_data "LINUX_CMD" "${v_cmd}" "${v_json_depth}" "Object"
+}
+
+# Generating patches details
+fn_gen_patches(){  
+    local v_cmd="sh ${CMD_DIR}/ora_validate_patches.sh"
+    local v_json_depth=".\"Patches\""
+    fn_gen_json_data "LINUX_CMD" "${v_cmd}" "${v_json_depth}" "ObjectArr"
+}
+
+# Function to compare the json file.
+fn_compare_json_files(){
+    local v_prev_json_file="$1"
+    local v_json_object_to_compare=""
+    echo -e "\e[0mComparing..."
+    cat "${WORKING_DIR}/ora_validate_compare_objects.conf" | while read line
+    do
+        # Checking if last two characters is []
+        # If true then it will be array treated differently.
+        if [ "${line: -2}" == "[]" ]; then
+            v_is_array=1
+            v_json_object_to_compare_without_braces=$(echo ${line} | sed 's/\.\[\]//g' | sed 's/\[\]//g')
+            v_json_object_to_compare="${v_json_object_to_compare_without_braces} | length"
+        else
+            v_is_array=0
+            v_json_object_to_compare="${line}"
+        fi
+        
+        # Flag variable to set the check has passed or not.
+        local v_pass=1
+        local v_cnt_match=1
+
+        if [ ${v_is_array} -ne 1 ]; then
+            fn_logMe "fn_compare_json_files, JSON object to compare ${v_json_object_to_compare}" "DEBUG"
+            local v_prev_val=$(${JQ} -S -r "${v_json_object_to_compare}" "${v_prev_json_file}")
+            local v_curr_val=$(${JQ} -S -r "${v_json_object_to_compare}" "${v_json_file}")
+            if [ "${v_prev_val}" == "${v_curr_val}" ]; then
+                fn_mark_stat "${v_json_object_to_compare}" "PASS"
+            else
+                fn_mark_stat "${v_json_object_to_compare}" "FAIL" "" "${v_prev_val}" "${v_curr_val}"
+            fi
+            fn_logMe "fn_compare_json_files, Prev - ${v_json_object_to_compare}, ${v_prev_val}" "DEBUG"
+            fn_logMe "fn_compare_json_files, Curr - ${v_json_object_to_compare}, ${v_curr_val}" "DEBUG"  
+        else
+            v_arr_length=$(${JQ} -S -r "${v_json_object_to_compare}" "${v_json_file}")
+            v_arr_prev_length=$(${JQ} -S -r "${v_json_object_to_compare}" "${v_prev_json_file}")
+            fn_logMe "fn_compare_json_files, array length ${v_arr_length}" "DEBUG"
+            fn_logMe "fn_compare_json_files, Prev array length ${v_arr_prev_length}" "DEBUG"
+
+            local v_tmp_prev="previous_val"
+            local v_tmp_curr="current_val"
+            local v_diff="diff_val"
+            ${JQ} -S -r "${v_json_object_to_compare_without_braces}" "${v_json_file}" | ${JQ} -r -c '.[]' > ${v_tmp_curr}
+            ${JQ} -S -r "${v_json_object_to_compare_without_braces}" "${v_prev_json_file}" | ${JQ} -r -c '.[]' > ${v_tmp_prev}
+            diff ${v_tmp_curr} ${v_tmp_prev} > ${v_diff}
+
+            # replace < arrow with the Current: and > arrow with Previous:
+            sed -i 's/^</Current: /g' ${v_diff}
+            sed -i 's/^>/Previous: /g' ${v_diff}
+
+            local v_diff_cnt=$(wc -l "${v_diff}" | awk '{print $1}')
+
+            if [ $v_arr_length -ne $v_arr_prev_length ]; then
+                v_pass=0
+                v_cnt_match=0
+            elif [ $v_diff_cnt -gt 0 ]; then
+                v_pass=0
+            fi
+            v_json_heading=$(echo "${v_json_object_to_compare}" | sed 's/ | length/ counts and details/g')
+            if [ $v_pass -eq 1 ]; then
+                fn_mark_stat "${v_json_heading}" "PASS"
+            else
+                fn_mark_stat "${v_json_heading}" "FAIL"
+                if [ $v_cnt_match -eq 0 ]; then
+                    echo "Count Not matching.."
+                fi
+                cat "${v_diff}"
+            fi  
+            rm "${v_tmp_prev}" "${v_tmp_curr}" "${v_diff}" 
+        fi
+           
+    done 
+}
+
+fn_mark_stat(){
+    local v_mgs="$1"
+    local v_stat="$2"
+    local v_tab="$3"
+    local v_prev_val="$4"
+    local v_curr_value="$5"
+    local v_padding="                                                                                           "
+    if [ "${v_tab}" == "TAB" ]; then
+        printf " -> %s%s" "${v_mgs}" "${v_padding:${#v_mgs}}" | tee -a ${OUT_FILE}
+    else
+        v_padding="                                                                                               "
+        printf "%s%s" "${v_mgs}" "${v_padding:${#v_mgs}}" | tee -a ${OUT_FILE}
+    fi
+    if [ "${v_stat}" == "PASS" ]; then
+        echo -e "\033[0;32m [PASSED] \033[0m"
+        echo -e "[PASSED]" >> ${OUT_FILE}
+    elif [ "${v_stat}" == "WARN" ]; then
+        echo -e "\033[0;33m [WARNED] \033[0m"
+        echo -e "[WARNED]" >> ${OUT_FILE}
+    else
+        echo -e "\033[0;31m [FAILED] \033[0m"
+
+        
+        if [ "$v_prev_val" != "" ]; then
+            local v_tmp_prev="/tmp/prev_val"
+            local v_tmp_curr="/tmp/curr_val"
+
+            # Output redirect to temporary file for further processing        
+            echo "${v_prev_val}" > "${v_tmp_prev}"
+            echo "${v_curr_val}" > "${v_tmp_curr}"
+
+            # Count the number of rows in the output file
+            # to determine the difference
+            local v_prev_count=$(wc -l "${v_tmp_prev}"| awk '{print $1}')
+            local v_curr_count=$(wc -l "${v_tmp_curr}"| awk '{print $1}')
+
+            fn_logMe "fn_mark_stat, Previous data count ${v_prev_count}" "DEBUG"
+            fn_logMe "fn_mark_stat, Current data count ${v_curr_count}" "DEBUG"
+
+            if [ $v_prev_count -gt 1 ] || [ $v_curr_count -gt 1 ]; then
+                echo -e "Difference Previous vs Current:"
+                diff -y "${v_tmp_prev}" "${v_tmp_curr}" > /tmp/diff_value
+                cat /tmp/diff_value | sed 's/^/\t/g'
+            else
+                echo -e "Previous value:"
+                cat "${v_tmp_prev}" | sed 's/^/\t/g'
+                echo -e "Current value:"
+                cat "${v_tmp_curr}" | sed 's/^/\t/g'
+            fi
+        fi
+        echo -e "[FAILED]" >> ${OUT_FILE}
+    fi
+}
+
